@@ -2,3 +2,7 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+
+# Spectra app data
+.spectra/
+docs/spectra/.vector-search.db*

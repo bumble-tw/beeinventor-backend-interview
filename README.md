@@ -18,12 +18,38 @@ npm run typecheck  # tsc --noEmit
 
 Requires Node.js 24 or later (runs `.ts` files directly via built-in type stripping, no build step).
 
+## AI-assisted workflow
+
+This project is developed with [Claude Code](https://claude.com/claude-code) using spec-driven development, so every change is planned, implemented, and verified against a written spec.
+
+| Tool | Role |
+|---|---|
+| [Spectra](https://github.com/kaochenlong/spectra-app) | Spec-driven development: each exercise part starts as a change proposal (requirements, design, tasks) before any code is written |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) | Code knowledge graph Claude queries for structure and call chains instead of grepping files |
+| [archify](https://github.com/tt-a1i/archify) | Generates the Exercise 2 architecture and sequence diagrams |
+
+Workflow for each exercise part:
+
+1. **Propose:** write the change proposal, spec, and task list (`/spectra-propose`)
+2. **Apply:** implement the tasks with tests (`/spectra-apply`)
+3. **Verify:** check the code against the spec and tasks (`/spectra-verify`)
+4. **Archive:** merge the change into the living specs (`/spectra-archive`)
+
+Where to look:
+
+- [`docs/spectra/specs/`](docs/spectra/specs/): the accepted specs (what the system must do)
+- [`docs/spectra/changes/archive/`](docs/spectra/changes/archive/): every completed change with its proposal, design, and tasks, showing how each part was reasoned through
+- [`CLAUDE.md`](CLAUDE.md): the instructions Claude follows in this repo
+
+I make the design decisions and review every change; Claude drafts, implements, and checks the work against the spec.
+
 ## Commit history
 
 Each exercise part is committed separately so the solving process can be followed:
 
 1. Project setup
-2. Exercise 1 — Part A: exact match
-3. Exercise 1 — Part B: prefix search
-4. Exercise 1 — Part C: wildcard search
-5. Exercise 2 — system design
+2. AI-assisted workflow setup (Spectra, Claude Code)
+3. Exercise 1 — Part A: exact match
+4. Exercise 1 — Part B: prefix search
+5. Exercise 1 — Part C: wildcard search
+6. Exercise 2 — system design
