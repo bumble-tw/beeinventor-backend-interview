@@ -4,6 +4,7 @@ context: |
   BeeInventor DasIoT backend technical interview.
   Tech stack: TypeScript on Node.js 24 (runs .ts directly via type stripping, no build step).
   Runtime: standard library only; devDependencies limited to typescript + @types/node.
+  Code style: never use classes; always use factory functions (state kept in closures, return an object typed by an interface), as in createDictionary().
   Tests: Node built-in test runner (`node --test`), files in exercise-1-dictionary/test/*.test.ts.
   Exercise 1: in-memory dictionary (exact match, prefix search, wildcard `?` / `*`).
   Exercise 2: distributed document search platform system design (docs + diagrams only).

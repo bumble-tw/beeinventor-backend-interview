@@ -49,3 +49,7 @@ See the Spectra section above. Specs live in `docs/spectra/`; project context fo
 - Finish with `/spectra-verify` → `/spectra-archive` → `/spectra-commit`.
 
 Diagrams for Exercise 2 → use the archify skill; conventions in `exercise-2-system-design/CLAUDE.md`.
+
+## Code style
+
+- Never use `class`. Always use factory functions: keep state in closures and return an object typed by an interface (see `createDictionary()` in `exercise-1-dictionary/src/dictionary.ts`).
