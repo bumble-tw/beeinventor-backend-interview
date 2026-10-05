@@ -111,9 +111,9 @@ Covered cases (`test/dictionary.test.ts`):
 
 - **Setup**: words become queryable; a second `setup` replaces the first; duplicates are harmless; `setup([])` yields an empty dictionary.
 - **Invalid words**: `setup` throws `TypeError` for uppercase (`"Cat"`, `"Dog"`), digit (`"ca1"`), symbol (`"c-t"`), space (`"ca t"`), non-ASCII (`"café"`) and the empty word (`""`, alone or among valid words); a failed `setup` keeps the previous contents.
-- **Exact match** against `["cat", "car", "card"]`: `"cat"` and `"card"` are found; `"ca"` (prefix only), `"cards"` (extension), `"dog"` (absent), `"Cat"` and `"c?t"` (invalid characters, no throw) are not.
+- **Exact match** against `["cat", "car", "card"]`: `"cat"` and `"card"` are found; `"ca"` (prefix only), `"cards"` (extension), `"dog"` (absent), `"Cat"` and `"c?t"` (invalid characters, no throw) are not. The brief's own example is also covered: after `setup(["cat", "car", "bar"])`, `"cat"` is found and `"ca"` and `"bat"` are not.
 - **Edge cases**: query on a new dictionary before any `setup`; `contains("")` is always `false`, and `setup(["", "b"])` is rejected without touching the loaded words.
-- **Prefix search** against `["cat", "car", "card", "dog"]`: `"ca"`, `"c"`, `"d"`, `"car"` and `"card"` (whole words count) match; `"cards"` (longer than every word), `"cow"`, `"x"`, `""` (empty prefix), `"Ca"` and `"c?"` (invalid characters, no throw) do not. Also: no match before any `setup` or after `setup([])`, results follow a replacing `setup`, and a failed `setup` keeps the previous prefix results.
+- **Prefix search** against `["cat", "car", "card", "dog"]`: `"ca"`, `"c"`, `"d"`, `"car"` and `"card"` (whole words count) match; `"cards"` (longer than every word), `"cow"`, `"x"`, `""` (empty prefix), `"Ca"` and `"c?"` (invalid characters, no throw) do not. Also: no match before any `setup` or after `setup([])`, results follow a replacing `setup`, and a failed `setup` keeps the previous prefix results. The brief's own example is also covered: against `["cat", "car", "bar"]`, `"ca"` and `"ba"` match and `"cr"` does not.
 - **Factory**: two dictionaries from `createDictionary()` are independent — loading one does not affect the other.
 
 Demo CLI (`test/cli.test.ts`):

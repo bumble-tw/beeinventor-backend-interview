@@ -59,5 +59,6 @@ Each exercise part is committed separately so the solving process can be followe
 2. AI-assisted workflow setup (Spectra, Claude Code)
 3. Exercise 1 — Part A: exact match
 4. Exercise 1 — Part B: prefix search
-5. Exercise 1 — Part C: wildcard search
-6. Exercise 2 — system design
+5. Exercise 1 — brief examples for Parts A/B
+6. Exercise 1 — Part C: wildcard search
+7. Exercise 2 — system design

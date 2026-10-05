@@ -109,6 +109,13 @@ describe("Exact match lookup", () => {
     }
   });
 
+  it("Exact match examples from the interview brief", () => {
+    const dict = dictionaryWith(["cat", "car", "bar"]);
+    assert.equal(dict.contains("cat"), true);
+    assert.equal(dict.contains("ca"), false);
+    assert.equal(dict.contains("bat"), false);
+  });
+
   it("Setup with the empty string keeps previous contents", () => {
     const dict = dictionaryWith(["a"]);
     assert.throws(() => dict.setup(["", "b"]), TypeError);
@@ -145,6 +152,13 @@ describe("Prefix lookup", () => {
         assert.equal(dict.startsWith(prefix), expected);
       });
     }
+  });
+
+  it("Prefix examples from the interview brief", () => {
+    const dict = dictionaryWith(["cat", "car", "bar"]);
+    assert.equal(dict.startsWith("ca"), true);
+    assert.equal(dict.startsWith("ba"), true);
+    assert.equal(dict.startsWith("cr"), false);
   });
 
   it("Prefix query before any setup", () => {
