@@ -13,6 +13,7 @@ Language: **TypeScript** (Node.js 24, standard library only at runtime).
 cd exercise-1-dictionary
 npm install        # dev-only: TypeScript + type definitions for type checking
 npm test           # runs the test suite with Node's built-in test runner
+npm run demo       # interactive session: type `setup cat car`, then `contains cat`
 npm run typecheck  # tsc --noEmit
 ```
 
