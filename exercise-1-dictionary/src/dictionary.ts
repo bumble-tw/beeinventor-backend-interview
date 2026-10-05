@@ -13,10 +13,22 @@ function createNode(): TrieNode {
 export interface Dictionary {
   setup(words: string[]): void;
   contains(word: string): boolean;
+  startsWith(prefix: string): boolean;
 }
 
 export function createDictionary(): Dictionary {
   let root = createNode();
+
+  // Walks from the root one character at a time; returns the node reached, or undefined if the path breaks.
+  // The empty string reaches the root itself.
+  function findNode(text: string): TrieNode | undefined {
+    let node: TrieNode | undefined = root;
+    for (const char of text) {
+      node = node.children.get(char);
+      if (node === undefined) return undefined;
+    }
+    return node;
+  }
 
   return {
     setup(words: string[]): void {
@@ -47,12 +59,16 @@ export function createDictionary(): Dictionary {
     },
 
     contains(word: string): boolean {
-      let node: TrieNode | undefined = root;
-      for (const char of word) {
-        node = node.children.get(char);
-        if (node === undefined) return false;
-      }
-      return node.isEnd;
+      return findNode(word)?.isEnd === true;
+    },
+
+    startsWith(prefix: string): boolean {
+      // The empty string is never part of the dictionary, so it is not a valid prefix either.
+      if (prefix === "") return false;
+      // Nodes are only created along inserted words and never removed, so every non-root node has a word
+      // at or below it: reaching the node means some word starts with the prefix.
+      // A prefix with characters outside a-z simply finds no path, like in contains.
+      return findNode(prefix) !== undefined;
     },
   };
 }

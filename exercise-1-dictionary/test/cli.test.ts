@@ -69,10 +69,37 @@ describe("Contains command", () => {
   });
 });
 
+describe("StartsWith command", () => {
+  describe("StartsWith prints prefix results (Example: startsWith output)", () => {
+    const cases: Array<[command: string, expected: string, note: string]> = [
+      ["startsWith ca", "true", "prefix of loaded words"],
+      ["startsWith card", "true", "equals a loaded word"],
+      ["startsWith cards", "false", "longer than every loaded word"],
+      ["startsWith dog", "false", "not loaded"],
+      ["startsWith Ca", "false", "invalid character, no error"],
+      ["startsWith", "false", "empty prefix never matches"],
+      ['startsWith ""', "false", "empty prefix never matches"],
+      ["startsWith ca da", "Usage: startsWith <prefix>", "too many arguments"],
+    ];
+
+    for (const [command, expected, note] of cases) {
+      it(`${command} prints ${expected} — ${note}`, () => {
+        const dict = createDictionary();
+        runCommand(dict, "setup cat car card");
+        assert.equal(runCommand(dict, command).output, expected);
+      });
+    }
+  });
+
+  it("StartsWith on an empty session dictionary", () => {
+    assert.deepEqual(runCommand(createDictionary(), "startsWith c"), { output: "false", exit: false });
+  });
+});
+
 describe("Help and unknown commands", () => {
   it("Help lists commands", () => {
     const { output, exit } = runCommand(createDictionary(), "help");
-    for (const command of ["setup", "contains", "help", "exit"]) {
+    for (const command of ["setup", "contains", "startsWith", "help", "exit"]) {
       assert.match(output, new RegExp(`\\b${command}\\b`), `help mentions ${command}`);
     }
     assert.equal(exit, false);
@@ -125,6 +152,12 @@ describe("Interactive demo session (running src/cli.ts)", () => {
 
   it("Piped commands run in order", () => {
     const { lines, status } = runCli("setup cat car card", "contains cat", "contains ca", "exit");
+    assertInOrder(lines, ["Loaded 3 word(s).", "true", "false"]);
+    assert.equal(status, 0);
+  });
+
+  it("StartsWith through the demo command", () => {
+    const { lines, status } = runCli("setup cat car card", "startsWith ca", "startsWith x", "exit");
     assertInOrder(lines, ["Loaded 3 word(s).", "true", "false"]);
     assert.equal(status, 0);
   });

@@ -15,6 +15,10 @@ Loaded 3 word(s).
 true
 > contains ca
 false
+> startsWith ca
+true
+> startsWith x
+false
 > setup Dog
 Error: Invalid word "Dog": only lowercase a-z is allowed
 > contains car
@@ -26,10 +30,11 @@ true
 |---|---|
 | `setup <word> <word> ...` | Load these words, replacing the dictionary (`setup` alone empties it) |
 | `contains <word>` | Print `true` if the word was loaded, otherwise `false` |
+| `startsWith <prefix>` | Print `true` if any loaded word starts with the prefix, otherwise `false` |
 | `help` | Show the command list |
 | `exit` / `quit` / Ctrl+D | End the session |
 
-Type `""` for the empty string, which is never a word: `setup ""` is rejected and `contains ""` prints `false`. Commands can also be piped in: `printf 'setup cat\ncontains cat\n' | npm run demo`.
+Type `""` for the empty string, which is never a word: `setup ""` is rejected, and `contains ""` and `startsWith ""` print `false`. Commands can also be piped in: `printf 'setup cat\ncontains cat\n' | npm run demo`.
 
 ## API
 
@@ -40,8 +45,9 @@ import { createDictionary } from "./src/dictionary.ts";
 
 const dict = createDictionary();
 dict.setup(["cat", "car", "card"]);
-dict.contains("cat"); // true
-dict.contains("ca");  // false
+dict.contains("cat");  // true
+dict.contains("ca");   // false
+dict.startsWith("ca"); // true
 ```
 
 Each `createDictionary()` call returns an independent dictionary with these methods:
@@ -49,7 +55,7 @@ Each `createDictionary()` call returns an independent dictionary with these meth
 ```ts
 setup(words: string[]): void        // load or replace the dictionary contents
 contains(word: string): boolean     // Part A — exact match
-startsWith(prefix: string): boolean // Part B — prefix search (planned, not implemented yet)
+startsWith(prefix: string): boolean // Part B — prefix search
 search(pattern: string): boolean    // Part C — wildcard search (`?` = one char, `*` = zero or more) (planned, not implemented yet)
 ```
 
@@ -62,10 +68,13 @@ search(pattern: string): boolean    // Part C — wildcard search (`?` = one cha
 - An empty dictionary (freshly created, or after `setup([])`) returns `false` for every query.
 - `setup` throws a `TypeError` (naming the offending word) if any word contains a character outside `a-z`; the dictionary keeps the contents it had before that call.
 - `contains` never throws: a query containing a character outside `a-z` simply returns `false`.
+- `startsWith("")` is always `false`, whatever the dictionary holds: the empty string does not exist in the dictionary at all, so it is not a valid prefix either.
+- `startsWith` never throws: a prefix containing a character outside `a-z` simply returns `false`.
+- A loaded word counts as starting with itself: after `setup(["card"])`, `startsWith("card")` is `true`.
 
 ## Data structure choice
 
-A **Trie** (prefix tree). Each node holds a `Map<string, TrieNode>` of children and an `isEnd` flag marking the end of a loaded word. `contains` walks the trie one character at a time and returns the `isEnd` flag of the node it lands on, so prefixes of loaded words are not false positives.
+A **Trie** (prefix tree). Each node holds a `Map<string, TrieNode>` of children and an `isEnd` flag marking the end of a loaded word. `contains` walks the trie one character at a time and returns the `isEnd` flag of the node it lands on, so prefixes of loaded words are not false positives. `startsWith` shares the same walk and differs only in the final check: since nodes are created only along loaded words (and never removed), reaching the prefix's node at all means some word starts with it.
 
 `setup` validates every word first, builds a brand-new trie, and only then swaps it in — so a failed `setup` never leaves half-loaded contents. Traversal is iterative (no recursion), so very long words cannot overflow the stack.
 
@@ -83,10 +92,10 @@ Alternatives considered:
 |---|---|---|
 | `setup` | O(N·L) | O(N·L) |
 | `contains` | O(L) | O(1) extra |
-| `startsWith` | TODO | TODO |
+| `startsWith` | O(P) | O(1) extra |
 | `search` | TODO | TODO |
 
-N = number of words, L = (average) word length; for `contains`, L is the query length. `setup` space is the worst case (no shared prefixes).
+N = number of words, L = (average) word length; for `contains`, L is the query length; P = prefix length. `setup` space is the worst case (no shared prefixes).
 
 ## Trade-offs
 
@@ -104,10 +113,11 @@ Covered cases (`test/dictionary.test.ts`):
 - **Invalid words**: `setup` throws `TypeError` for uppercase (`"Cat"`, `"Dog"`), digit (`"ca1"`), symbol (`"c-t"`), space (`"ca t"`), non-ASCII (`"café"`) and the empty word (`""`, alone or among valid words); a failed `setup` keeps the previous contents.
 - **Exact match** against `["cat", "car", "card"]`: `"cat"` and `"card"` are found; `"ca"` (prefix only), `"cards"` (extension), `"dog"` (absent), `"Cat"` and `"c?t"` (invalid characters, no throw) are not.
 - **Edge cases**: query on a new dictionary before any `setup`; `contains("")` is always `false`, and `setup(["", "b"])` is rejected without touching the loaded words.
+- **Prefix search** against `["cat", "car", "card", "dog"]`: `"ca"`, `"c"`, `"d"`, `"car"` and `"card"` (whole words count) match; `"cards"` (longer than every word), `"cow"`, `"x"`, `""` (empty prefix), `"Ca"` and `"c?"` (invalid characters, no throw) do not. Also: no match before any `setup` or after `setup([])`, results follow a replacing `setup`, and a failed `setup` keeps the previous prefix results.
 - **Factory**: two dictionaries from `createDictionary()` are independent — loading one does not affect the other.
 
 Demo CLI (`test/cli.test.ts`):
 
-- **Commands**: `setup` prints `Loaded N word(s).` (including `setup` with no words); an invalid word prints `Error: ...` and keeps the previous contents; `contains` prints `true` / `false` for loaded, prefix-only, invalid-character and empty-string queries, and `Usage: contains <word>` for extra arguments; `""` stands for the empty string, so `setup "" a` prints the empty-word error.
+- **Commands**: `setup` prints `Loaded N word(s).` (including `setup` with no words); an invalid word prints `Error: ...` and keeps the previous contents; `contains` prints `true` / `false` for loaded, prefix-only, invalid-character and empty-string queries, and `Usage: contains <word>` for extra arguments; `startsWith` prints `true` / `false` for prefix, whole-word, too-long, absent, invalid-character and empty prefixes (including on a fresh session), and `Usage: startsWith <prefix>` for extra arguments; `""` stands for the empty string, so `setup "" a` prints the empty-word error.
 - **Session**: `help` lists the commands; unknown commands (including `""` as a command name) print a hint and the session continues; blank lines print nothing; `exit` / `quit` end the session.
-- **End to end**: `src/cli.ts` is run as a child process with piped input — it starts by printing the command list with an empty dictionary, commands run in order, commands after `exit` are ignored, and the process exits with code 0 when input ends.
+- **End to end**: `src/cli.ts` is run as a child process with piped input — it starts by printing the command list with an empty dictionary, commands run in order (including `startsWith`), commands after `exit` are ignored, and the process exits with code 0 when input ends.

@@ -122,3 +122,54 @@ describe("Exact match lookup", () => {
     assert.equal(dict.contains(""), false);
   });
 });
+
+describe("Prefix lookup", () => {
+  describe("Prefix lookups (Example: prefix results)", () => {
+    const cases: Array<[prefix: string, expected: boolean, note: string]> = [
+      ["ca", true, "shared by cat, car, card"],
+      ["c", true, "single letter"],
+      ["d", true, "first letter of dog"],
+      ["car", true, "equals a loaded word and is a prefix of card"],
+      ["card", true, "equals a loaded word with nothing below it"],
+      ["cards", false, "longer than every loaded word"],
+      ["cow", false, "path ends after c"],
+      ["x", false, "no word starts with it"],
+      ["", false, "empty prefix never matches"],
+      ["Ca", false, "invalid character, no throw"],
+      ["c?", false, "invalid character, no throw"],
+    ];
+
+    for (const [prefix, expected, note] of cases) {
+      it(`startsWith(${JSON.stringify(prefix)}) is ${expected} — ${note}`, () => {
+        const dict = dictionaryWith(["cat", "car", "card", "dog"]);
+        assert.equal(dict.startsWith(prefix), expected);
+      });
+    }
+  });
+
+  it("Prefix query before any setup", () => {
+    const dict = createDictionary();
+    assert.equal(dict.startsWith(""), false);
+    assert.equal(dict.startsWith("a"), false);
+  });
+
+  it("Prefix lookup on an emptied dictionary", () => {
+    const dict = dictionaryWith(["cat"]);
+    dict.setup([]);
+    assert.equal(dict.startsWith("c"), false);
+  });
+
+  it("Prefix lookup follows setup replacement", () => {
+    const dict = dictionaryWith(["cat"]);
+    dict.setup(["dog"]);
+    assert.equal(dict.startsWith("c"), false);
+    assert.equal(dict.startsWith("d"), true);
+  });
+
+  it("Failed setup keeps prefix results", () => {
+    const dict = dictionaryWith(["cat"]);
+    assert.throws(() => dict.setup(["dog", "Bad"]), TypeError);
+    assert.equal(dict.startsWith("c"), true);
+    assert.equal(dict.startsWith("d"), false);
+  });
+});
