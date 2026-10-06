@@ -96,10 +96,38 @@ describe("StartsWith command", () => {
   });
 });
 
+describe("Search command", () => {
+  describe("Search prints wildcard results (Example: search output)", () => {
+    const cases: Array<[command: string, expected: string, note: string]> = [
+      ["search c?t", "true", "? matches one character"],
+      ["search ca*", "true", "* matches the rest of the word"],
+      ["search *d", "true", "matches card"],
+      ["search ca", "false", "whole word required"],
+      ["search ?????", "false", "no five-letter word"],
+      ["search Ca*", "false", "invalid character, no error"],
+      ["search", "false", "empty pattern never matches"],
+      ['search ""', "false", "empty pattern never matches"],
+      ["search c?t d*", "Usage: search <pattern>", "too many arguments"],
+    ];
+
+    for (const [command, expected, note] of cases) {
+      it(`${command} prints ${expected} — ${note}`, () => {
+        const dict = createDictionary();
+        runCommand(dict, "setup cat car card");
+        assert.equal(runCommand(dict, command).output, expected);
+      });
+    }
+  });
+
+  it("Search on an empty session dictionary", () => {
+    assert.deepEqual(runCommand(createDictionary(), "search *"), { output: "false", exit: false });
+  });
+});
+
 describe("Help and unknown commands", () => {
   it("Help lists commands", () => {
     const { output, exit } = runCommand(createDictionary(), "help");
-    for (const command of ["setup", "contains", "startsWith", "help", "exit"]) {
+    for (const command of ["setup", "contains", "startsWith", "search", "help", "exit"]) {
       assert.match(output, new RegExp(`\\b${command}\\b`), `help mentions ${command}`);
     }
     assert.equal(exit, false);
@@ -158,6 +186,12 @@ describe("Interactive demo session (running src/cli.ts)", () => {
 
   it("StartsWith through the demo command", () => {
     const { lines, status } = runCli("setup cat car card", "startsWith ca", "startsWith x", "exit");
+    assertInOrder(lines, ["Loaded 3 word(s).", "true", "false"]);
+    assert.equal(status, 0);
+  });
+
+  it("Search through the demo command", () => {
+    const { lines, status } = runCli("setup cat car card", "search c?r*", "search *x*", "exit");
     assertInOrder(lines, ["Loaded 3 word(s).", "true", "false"]);
     assert.equal(status, 0);
   });

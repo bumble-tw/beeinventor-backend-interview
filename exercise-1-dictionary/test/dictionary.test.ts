@@ -187,3 +187,82 @@ describe("Prefix lookup", () => {
     assert.equal(dict.startsWith("d"), false);
   });
 });
+
+describe("Wildcard lookup", () => {
+  describe("Wildcard lookups (Example: wildcard results)", () => {
+    const cases: Array<[pattern: string, expected: boolean, note: string]> = [
+      ["cat", true, "no wildcard, behaves like exact match"],
+      ["ca", false, "matches only the beginning of loaded words"],
+      ["c?t", true, "? matches a"],
+      ["?a?", true, "matches cat and car"],
+      ["????", true, "matches card"],
+      ["?????", false, "no five-letter word"],
+      ["?", false, "no one-letter word"],
+      ["ca*", true, "* matches the rest of cat, car, card"],
+      ["car*", true, "* matches zero characters (car)"],
+      ["*d", true, "matches card"],
+      ["c*r*d", true, "several *, matches card"],
+      ["*o*", true, "matches dog"],
+      ["**", true, "consecutive * behave like one"],
+      ["*", true, "any loaded word"],
+      ["d?g*", true, "? then * matching zero characters"],
+      ["ca*s", false, "no loaded word starting with ca ends with s"],
+      ["*x*", false, "no loaded word contains x"],
+      ["", false, "empty pattern never matches"],
+      ["Ca*", false, "invalid character, no throw"],
+      ["c.t", false, "invalid character, no throw"],
+    ];
+
+    for (const [pattern, expected, note] of cases) {
+      it(`search(${JSON.stringify(pattern)}) is ${expected} — ${note}`, () => {
+        const dict = dictionaryWith(["cat", "car", "card", "dog"]);
+        assert.equal(dict.search(pattern), expected);
+      });
+    }
+  });
+
+  it("Wildcard examples from the interview brief", () => {
+    const dict = dictionaryWith(["cat", "car", "bar"]);
+    assert.equal(dict.search("c?t"), true);
+    assert.equal(dict.search("*at"), true);
+    assert.equal(dict.search("ca*"), true);
+    assert.equal(dict.search("cr*"), false);
+    assert.equal(dict.search("*"), true);
+  });
+
+  it("Wildcard query before any setup", () => {
+    const dict = createDictionary();
+    assert.equal(dict.search("*"), false);
+    assert.equal(dict.search("?"), false);
+    assert.equal(dict.search(""), false);
+  });
+
+  it("Wildcard lookup on an emptied dictionary", () => {
+    const dict = dictionaryWith(["cat"]);
+    dict.setup([]);
+    assert.equal(dict.search("*"), false);
+  });
+
+  it("Wildcard lookup follows setup replacement", () => {
+    const dict = dictionaryWith(["cat"]);
+    dict.setup(["dog"]);
+    assert.equal(dict.search("c*"), false);
+    assert.equal(dict.search("d*"), true);
+  });
+
+  it("Failed setup keeps wildcard results", () => {
+    const dict = dictionaryWith(["cat"]);
+    assert.throws(() => dict.setup(["dog", "Bad"]), TypeError);
+    assert.equal(dict.search("c?t"), true);
+    assert.equal(dict.search("d*"), false);
+  });
+
+  it("Many stars do not cause exponential work", () => {
+    const dict = dictionaryWith(["a".repeat(30)]);
+    const pattern = "*a".repeat(15) + "b";
+    // Elapsed time is measured instead of using the test timeout option, which cannot interrupt a synchronous walk.
+    const start = performance.now();
+    assert.equal(dict.search(pattern), false);
+    assert.ok(performance.now() - start < 1000, "search finishes within one second");
+  });
+});

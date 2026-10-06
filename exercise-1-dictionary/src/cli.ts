@@ -15,9 +15,10 @@ export const HELP = `Commands:
   setup <word> <word> ...   load these words, replacing the dictionary (words: lowercase a-z)
   contains <word>           print true if the word was loaded, otherwise false
   startsWith <prefix>       print true if any loaded word starts with the prefix, otherwise false
+  search <pattern>          print true if any loaded word matches the whole pattern (? = one letter, * = zero or more)
   help                      show this message
   exit                      end the session (or: quit, Ctrl+D)
-"" stands for the empty string, which is never a word: setup "" is rejected, contains "" and startsWith "" print false`;
+"" stands for the empty string, which is never a word: setup "" is rejected, contains "", startsWith "" and search "" print false`;
 
 export function runCommand(dict: Dictionary, line: string): CommandResult {
   if (line.trim() === "") return print(""); // blank line
@@ -41,6 +42,10 @@ export function runCommand(dict: Dictionary, line: string): CommandResult {
     case "startsWith":
       if (args.length > 1) return print("Usage: startsWith <prefix>");
       return print(String(dict.startsWith(args[0] ?? "")));
+
+    case "search":
+      if (args.length > 1) return print("Usage: search <pattern>");
+      return print(String(dict.search(args[0] ?? "")));
 
     case "help":
       return print(HELP);

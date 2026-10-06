@@ -13,7 +13,7 @@ Language: **TypeScript** (Node.js 24, standard library only at runtime).
 cd exercise-1-dictionary
 npm install        # dev-only: TypeScript + type definitions for type checking
 npm test           # runs the test suite with Node's built-in test runner
-npm run demo       # interactive session: type `setup cat car`, then `contains cat` or `startsWith ca`
+npm run demo       # interactive session: type `setup cat car`, then `contains cat`, `startsWith ca` or `search c?t`
 npm run typecheck  # tsc --noEmit
 ```
 
@@ -21,10 +21,10 @@ Requires Node.js 24 or later (runs `.ts` files directly via built-in type stripp
 
 ## Exercise 1 at a glance
 
-- **Design:** a Trie (prefix tree) behind a `createDictionary()` factory function. Exact match and prefix search share one walk down the trie, so a lookup costs time proportional to the query length. See [Data structure choice](exercise-1-dictionary/README.md#data-structure-choice) and [Complexity](exercise-1-dictionary/README.md#complexity).
+- **Design:** a Trie (prefix tree) behind a `createDictionary()` factory function. Exact match and prefix search share one walk down the trie, so a lookup costs time proportional to the query length. Wildcard search (`?`, `*`) walks the trie depth-first and remembers visited states, so patterns with many `*` stay polynomial. See [Data structure choice](exercise-1-dictionary/README.md#data-structure-choice) and [Complexity](exercise-1-dictionary/README.md#complexity).
 - **Assumptions:** words are lowercase `a-z`. `setup` replaces the whole dictionary and rejects an invalid word without changing the current contents. Queries never throw, and the empty string `""` never matches. See [Assumptions](exercise-1-dictionary/README.md#assumptions).
 - **Tests:** `npm test` runs the Node built-in test runner over the dictionary and the demo CLI, including running the CLI as a child process. Test cases are listed in [Tests](exercise-1-dictionary/README.md#tests).
-- **Try it with the CLI:** `npm run demo` starts an interactive session for testing by hand: type `setup cat car card`, then `contains cat`, `startsWith ca` or `help`. Commands can also be piped in, e.g. `printf 'setup cat car card\nstartsWith ca\ncontains ca\n' | npm run demo` prints `true` then `false`. See [Try it](exercise-1-dictionary/README.md#try-it) for all commands.
+- **Try it with the CLI:** `npm run demo` starts an interactive session for testing by hand: type `setup cat car card`, then `contains cat`, `startsWith ca`, `search c?r*` or `help`. Commands can also be piped in, e.g. `printf 'setup cat car card\nstartsWith ca\ncontains ca\n' | npm run demo` prints `true` then `false`. See [Try it](exercise-1-dictionary/README.md#try-it) for all commands.
 
 ## AI-assisted workflow
 
