@@ -1,5 +1,7 @@
 # Exercise 2 — Distributed Document Search Platform
 
+**English** · [繁體中文](README.zh-TW.md)
+
 A design for a platform where users upload, view, search and delete text documents, sized for 1 million users, 10 million documents and 3,000 searches per second. This is a design document with diagrams; there is no code.
 
 **In one paragraph:** files go straight from the browser to S3; S3 then queues a job, and workers split each document into small passages and index them in OpenSearch. PostgreSQL holds every document's status and permissions and is always the source of truth, so a search result is re-checked against it before a user sees it. Every background step can safely run twice, which is how retries and crashes are handled.
@@ -18,7 +20,7 @@ A design for a platform where users upload, view, search and delete text documen
 
 The brief gives the scale and the requirements. Everything below is an assumption I added to make the design concrete.
 
-- **Authentication** is handled by an external identity provider (for example Amazon Cognito). The API only validates the JWT and reads the user ID.
+- **Authentication** is outside the scope of the brief, so it is treated as a separate component: every request reaches the API with a signed JWT that identifies the user (in practice issued by an identity provider such as Amazon Cognito). The API only validates the JWT and reads the user ID.
 - **Access model:** every document has one owner. The owner can share it read-only with individual users or with groups. A user can belong to many groups; a typical user is in a few to a few dozen.
 - **Documents are plain text (UTF-8).** Supporting PDF or other formats would add a text-extraction step to the worker; nothing else changes.
 - **Maximum file size is 20 MB**, ten times the 2 MB average. A long novel in plain text is only a few MB.
@@ -27,7 +29,7 @@ The brief gives the scale and the requirements. Everything below is an assumptio
 - **Capacity is planned for 2× today's volume** (20 million documents), because some choices, such as the number of search shards, are hard to change later.
 - **The peak rates in the brief are peaks.** Average traffic is much lower.
 - **There is no review or moderation step.** A processed document becomes searchable right away for the people allowed to read it.
-- **Deletion has no undo.** The document disappears for users immediately, its search data is removed within seconds, and the original file (every S3 version) and its metadata are permanently removed by the next daily purge, so within about a day. An audit record of the deletion is kept. Restoring deleted documents is not a requirement, so it is not offered.
+- **Deletion has no undo.** The document disappears for users immediately, its search data is removed within seconds, and the original file (every S3 version) and its metadata are permanently removed by the next daily purge, so within about a day. An audit record of the deletion is kept: the brief does not ask for it, but it is cheap and it is the only evidence left when someone asks where a document went. Restoring deleted documents is not a requirement, so it is not offered.
 - **One AWS region, three Availability Zones.** Multi-region is out of scope.
 
 ## Capacity estimation
@@ -166,7 +168,7 @@ Each path is described in detail in the sections below.
 
 ## API design
 
-REST + JSON under `/v1`. Users sign in with an external identity provider; every request carries `Authorization: Bearer <JWT>`, and the API only validates the token and reads the user ID. IDs are ULIDs (sortable, and they do not reveal how many documents exist).
+REST + JSON under `/v1`. Every request carries the JWT from the authentication component (`Authorization: Bearer <JWT>`); the API only validates it and reads the user ID. IDs are ULIDs (sortable, and they do not reveal how many documents exist).
 
 ### Endpoints
 
@@ -180,8 +182,8 @@ REST + JSON under `/v1`. Users sign in with an external identity provider; every
 | `GET /v1/documents/{docId}/grants` | List who the document is shared with | Owner |
 | `PUT /v1/documents/{docId}/grants/{user\|group}/{id}` | Share with a user or a group (read-only) | Owner |
 | `DELETE /v1/documents/{docId}/grants/{user\|group}/{id}` | Stop sharing | Owner |
-| `POST /v1/groups`, `GET /v1/groups` | Create a group; list my groups | Any signed-in user |
-| `PUT` / `DELETE /v1/groups/{groupId}/members/{userId}` | Add or remove a member | Group admin |
+| `POST /v1/groups`, `GET /v1/groups` | Create a group (the creator becomes its only admin); list my groups | Any signed-in user |
+| `PUT` / `DELETE /v1/groups/{groupId}/members/{userId}` | Add or remove a member | Group admin (the creator) |
 | `GET /v1/search?q=&page=&pageSize=` | Keyword search over documents I can read | Any signed-in user |
 
 ### Create a document
@@ -270,8 +272,8 @@ Every state change is a conditional update, for example `UPDATE documents SET st
 
 ```sql
 users           (id PK, email UNIQUE, display_name, created_at)
-groups          (id PK, name, created_by, created_at)
-group_members   (group_id, user_id, role,                        -- role: 'admin' | 'member'
+groups          (id PK, name, admin_id, created_at)              -- admin_id: the creator, the only one who adds or removes members
+group_members   (group_id, user_id,
                  PRIMARY KEY (group_id, user_id))                 -- a user can be in many groups
 
 documents       (id PK, owner_id, title, original_filename, size_bytes,
