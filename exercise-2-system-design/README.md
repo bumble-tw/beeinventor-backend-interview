@@ -13,7 +13,7 @@ The brief gives the scale and the requirements. Everything below is an assumptio
 - **Capacity is planned for 2× today's volume** (20 million documents), because some choices, such as the number of search shards, are hard to change later.
 - **The peak rates in the brief are peaks.** Average traffic is much lower.
 - **There is no review or moderation step.** A processed document becomes searchable right away for the people allowed to read it.
-- **Deletion is a soft delete.** The document disappears for users immediately, its search data is removed shortly after, and the original file and metadata are permanently removed after 30 days. The owner can restore it during those 30 days.
+- **Deletion has no undo.** The document disappears for users immediately, its search data is removed within seconds, and the original file (every S3 version) and its metadata are permanently removed by the next daily purge, so within about a day. An audit record of the deletion is kept. Restoring deleted documents is not a requirement, so it is not offered.
 - **One AWS region, three Availability Zones.** Multi-region is out of scope.
 
 ## Capacity estimation
@@ -120,8 +120,8 @@ Interactive version (open locally in a browser): [`diagrams/high-level-architect
 |---|---|---|
 | **ALB + AWS WAF** | Entry point: TLS, load balancing, basic bot and rate rules | Managed load balancer that EKS can configure directly (AWS Load Balancer Controller) |
 | **`api`** (EKS) | Authorization, search, sharing, signing upload/download links, and deletion (marks the document deleted and queues a delete job) | Stateless, so it scales out on CPU with HPA |
-| **`index-worker`, `delete-worker`** (EKS) | Process queued jobs: build and remove search data | Scale on queue depth with KEDA, down to a small baseline when idle |
-| **CronJobs** (EKS) | Every 5 minutes, expire abandoned uploads. Daily, permanently remove documents deleted more than 30 days ago: every S3 version (deleted by version ID) and the metadata | Simple scheduled work next to the rest of our code |
+| **`index-worker`, `delete-worker`** (EKS) | Process queued jobs: `index-worker` builds search data and rewrites permissions on passages; `delete-worker` removes search data | Scale on queue depth with KEDA, down to a small baseline when idle |
+| **CronJobs** (EKS) | Every 5 minutes, expire abandoned uploads. Daily, permanently remove deleted documents (once their search data is cleared), and expired or failed documents older than 7 days: every S3 version (deleted by version ID) and the metadata | Simple scheduled work next to the rest of our code |
 | **S3** | Original files | Durable and cheap; pre-signed URLs let browsers upload and download directly, so file traffic never passes through the API; emits an event when a file arrives |
 | **Aurora PostgreSQL** | Metadata, permissions, document status | Transactions and conditional updates for the document state machine; read replicas for permission checks |
 | **SQS Standard + DLQ** | Processing jobs | Retries and a dead-letter queue are built in; workers are idempotent, so the queue does not need to guarantee order or exactly-once delivery |
@@ -146,17 +146,152 @@ The design relies on capabilities, not on AWS-specific features. Any platform th
 - **Search:** browser → ALB → `api` → rate limit (Redis) → OpenSearch (keywords + permission filter) → `api` re-checks permissions in PostgreSQL → results with highlighted passages.
 - **Upload:** browser → `api` creates the document record and returns a pre-signed upload link → browser uploads straight to S3 → S3 event → SQS.
 - **Background processing:** SQS → `index-worker` → reads the file from S3 → writes passages to OpenSearch → marks the document searchable in PostgreSQL.
-- **Delete:** `api` marks the document deleted in PostgreSQL (hidden at once) and queues a delete job → `delete-worker` removes its passages from OpenSearch → after 30 days a CronJob deletes every S3 version and the metadata.
+- **Delete:** `api` marks the document deleted in PostgreSQL (hidden at once) and queues a delete job → `delete-worker` removes its passages from OpenSearch → the next daily purge deletes every S3 version and the metadata.
 
 Each path is described in detail in the sections below.
 
 ## API design
 
-TODO
+REST + JSON under `/v1`. Users sign in with an external identity provider; every request carries `Authorization: Bearer <JWT>`, and the API only validates the token and reads the user ID. IDs are ULIDs (sortable, and they do not reveal how many documents exist).
+
+### Endpoints
+
+| Method and path | What it does | Who can call it |
+|---|---|---|
+| `POST /v1/documents` | Create a document and get a pre-signed upload link | Any signed-in user |
+| `GET /v1/documents?scope=owned\|shared&cursor=` | List my documents, or documents shared with me | Any signed-in user |
+| `GET /v1/documents/{docId}` | Document details and status | Owner, viewers |
+| `GET /v1/documents/{docId}/download` | Get a short-lived download link | Owner, viewers |
+| `DELETE /v1/documents/{docId}` | Delete: hidden at once, permanently removed within about a day | Owner |
+| `GET /v1/documents/{docId}/grants` | List who the document is shared with | Owner |
+| `PUT /v1/documents/{docId}/grants/{user\|group}/{id}` | Share with a user or a group (read-only) | Owner |
+| `DELETE /v1/documents/{docId}/grants/{user\|group}/{id}` | Stop sharing | Owner |
+| `POST /v1/groups`, `GET /v1/groups` | Create a group; list my groups | Any signed-in user |
+| `PUT` / `DELETE /v1/groups/{groupId}/members/{userId}` | Add or remove a member | Group admin |
+| `GET /v1/search?q=&page=&pageSize=` | Keyword search over documents I can read | Any signed-in user |
+
+### Create a document
+
+```http
+POST /v1/documents
+Authorization: Bearer <JWT>
+Idempotency-Key: 01J9ZQ…            (generated by the client, reused on retry)
+
+{ "title": "Quantum Mechanics", "filename": "quantum.txt", "sizeBytes": 2097152, "contentType": "text/plain" }
+```
+
+```json
+201 Created
+{
+  "docId": "01J9ZK…",
+  "status": "UPLOADING",
+  "upload": {
+    "url": "https://<bucket>.s3.amazonaws.com/",
+    "fields": { "key": "docs/01J9ZK…/v1", "policy": "…", "x-amz-signature": "…" },
+    "expiresAt": "2026-10-07T08:15:00Z"
+  }
+}
+```
+
+A retry with the same `Idempotency-Key` returns the same `docId` instead of creating a second document.
+
+### Search
+
+```json
+GET /v1/search?q=quantum&page=1&pageSize=10
+
+200 OK
+{
+  "results": [
+    {
+      "docId": "01J9ZK…",
+      "title": "Quantum Mechanics",
+      "passages": [ { "chunkNo": 7, "highlight": "<em>Quantum</em> mechanics studies very small particles…" } ]
+    }
+  ],
+  "page": 1,
+  "pageSize": 10,
+  "approxTotal": 128
+}
+```
+
+Each document appears once, with up to 3 matching passages.
+
+### Rules for every endpoint
+
+| Rule | Why |
+|---|---|
+| Errors look like `{"error": {"code", "message", "requestId"}}`; `requestId` is the trace ID | A user can quote it, and we find the full trace in one lookup |
+| **No permission returns `404`, not `403`** | `403` would confirm that the document exists |
+| `413` when the declared size is over 20 MB | The upload link would reject it anyway; fail early |
+| `429` with `Retry-After` when rate limited | Clients know when to retry |
+| `POST /v1/documents` requires `Idempotency-Key`; `PUT` and `DELETE` are idempotent by design | Retries never create duplicates |
+| Lists use a cursor; search uses pages (max 20 per page, max 100 pages) | Lists come from PostgreSQL, where a cursor is stable; search is ranked by relevance in OpenSearch |
+| Highlights are HTML-escaped before the `<em>` tags are added | Document text is user content and could contain script tags |
 
 ## Core data model
 
-TODO
+### Document states
+
+```
+POST /documents
+      │
+      ▼
+  UPLOADING ── deadline passed, no file in S3 (cleanup job)  ──▶ EXPIRED
+            └─ file arrived > 10 min after deadline (worker) ──▶ EXPIRED
+      │ S3 event
+      ▼
+  PROCESSING ── content check failed ──▶ FAILED
+      │
+      ▼
+  SEARCHABLE
+
+  UPLOADING / PROCESSING / SEARCHABLE / FAILED ── DELETE ──▶ DELETED ── daily purge ──▶ permanently removed
+  EXPIRED / FAILED ── daily purge, after 7 days ──▶ permanently removed
+```
+
+Every state change is a conditional update, for example `UPDATE documents SET status = 'PROCESSING' WHERE id = $1 AND status = 'UPLOADING'`. When two workers race, exactly one update succeeds; the other sees zero rows changed and stops. The one exception is taking over from a crashed worker, described in the upload pipeline.
+
+### PostgreSQL (source of truth)
+
+```sql
+users           (id PK, email UNIQUE, display_name, created_at)
+groups          (id PK, name, created_by, created_at)
+group_members   (group_id, user_id, role,                        -- role: 'admin' | 'member'
+                 PRIMARY KEY (group_id, user_id))                 -- a user can be in many groups
+
+documents       (id PK, owner_id, title, original_filename, size_bytes,
+                 status,                                          -- the state machine above
+                 acl_version,                                     -- bumped on every sharing change
+                 s3_key, s3_version_id,                           -- the exact file version processed
+                 claimed_at,                                      -- when a worker claimed it (crash takeover)
+                 search_cleared_at,                               -- set by delete-worker; purge waits for it
+                 idempotency_key, UNIQUE (owner_id, idempotency_key),
+                 upload_expires_at, uploaded_at, searchable_at, deleted_at,
+                 failed_reason, created_at, updated_at)
+
+document_grants (doc_id, principal_type, principal_id, permission, -- 'user' | 'group';  'owner' | 'viewer'
+                 PRIMARY KEY (doc_id, principal_type, principal_id))
+
+audit_log       (id PK, actor_id, action, doc_id, created_at)     -- deletes, purges, sharing changes
+outbox          (id PK, doc_id, action, created_at, sent_at)      -- messages waiting to be sent to SQS
+```
+
+Main indexes: `documents (owner_id, created_at)` for "my documents", `document_grants (principal_type, principal_id)` for "shared with me", `group_members (user_id)` to look up a user's groups, and partial indexes on `UPLOADING` and `DELETED` rows for the scheduled jobs.
+
+### OpenSearch passage index (derived copy)
+
+One record per passage of about 2 KB:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `_id` | `{docId}-{chunkNo}` | Fixed ID, so writing the same passage twice overwrites it |
+| `docId`, `chunkNo` | keyword / integer | Group results by document |
+| `acl_version` | long | Permission version: a permission update skips passages that already have newer permissions |
+| `title`, `text` | text, Chinese-aware analyzer | Keyword search and highlighting |
+| `acl` | keyword list, e.g. `["user:12", "group:7"]` | Who may read this passage (see [Authorization](#authorization-and-permission-filtering)) |
+
+The application reads and writes through an alias, so the index can be rebuilt under a new name and switched over without downtime.
 
 ## Document storage and metadata storage
 
@@ -165,8 +300,8 @@ Each kind of data lives where it fits best. PostgreSQL and S3 are the source of 
 | Store | What it holds | Role |
 |---|---|---|
 | **S3** | Original files at `docs/{docId}/v{n}` | Source of truth for content. Versioning is on, so the worker records the exact version it processed and downloads always serve that version. A lifecycle rule removes unfinished multipart uploads after 1 day. Replaced versions (from a retried upload) are kept, because downloads serve the version the worker processed. Permanent deletion removes every version by version ID, so a delete marker never leaves the file behind. |
-| **Aurora PostgreSQL** | Documents (owner, title, status, version, S3 key and version, timestamps), sharing grants, groups, group members, audit log | Source of truth for metadata and permissions. One primary plus two read replicas across three AZs. |
-| **OpenSearch** | One record per passage: text, document ID, status, and the list of users and groups allowed to read it | A derived copy that can be rebuilt from S3 and PostgreSQL at any time. Accessed through an alias, so the index can be rebuilt and switched without downtime. |
+| **Aurora PostgreSQL** | Documents (owner, title, status, S3 key and version, timestamps), sharing grants, groups, group members, audit log | Source of truth for metadata and permissions. One primary plus two read replicas across three AZs. |
+| **OpenSearch** | One record per passage: text, document ID, and the list of users and groups allowed to read it | A derived copy that can be rebuilt from S3 and PostgreSQL at any time. Accessed through an alias, so the index can be rebuilt and switched without downtime. |
 
 **Why metadata is not stored as S3 object metadata:** the system needs conditional updates (a document moves through states such as uploading, processing and searchable, and two workers must never both win), queries (for example, "all uploads that expired"), unique constraints (to stop duplicate documents on retries) and joins (to resolve group permissions). Those need a relational database.
 
@@ -174,19 +309,125 @@ When the database and the search index disagree, the database wins. How the two 
 
 ## Upload and asynchronous processing pipeline
 
-TODO
+[![Upload and background processing](diagrams/upload-processing.sequence.png)](diagrams/upload-processing.sequence.html)
+
+Interactive version: [`diagrams/upload-processing.sequence.html`](diagrams/upload-processing.sequence.html) · source: [`diagrams/upload-processing.sequence.json`](diagrams/upload-processing.sequence.json)
+
+### Steps
+
+1. **Create the record.** The browser calls `POST /v1/documents`. The API checks the declared size (≤ 20 MB), inserts the document as `UPLOADING` with a 15-minute deadline, inserts the owner's grant, and returns a pre-signed **POST** link.
+2. **Upload straight to S3.** The link's policy fixes the key (`docs/{docId}/v1`) and limits the size to 1 B–20 MB, so S3 itself rejects anything else. File bytes never pass through the API.
+3. **S3 starts the processing.** When the file arrives, S3 sends an `ObjectCreated` event to SQS. Completion is taken from this event, not from the browser, so it still works if the user closes the tab.
+4. **Claim the document.** A worker moves the document from `UPLOADING` to `PROCESSING` with a conditional update and records which S3 version it is processing. If the document is already `PROCESSING` for that same S3 version and was claimed longer ago than the queue's visibility timeout, an earlier worker crashed half-way, so this worker takes over; if the claim is recent, another worker is still on it and this one stops. A worker that extends the visibility timeout on a large file also refreshes `claimed_at`, so it is never mistaken for a crashed one. The deadline is checked against the time the file arrived in S3 (from the event), not the time the worker runs: a file that arrived up to 10 minutes after the deadline is accepted, even if the queue was backed up.
+5. **Check the content.** The worker reads the file from S3 and checks the real size and that it is UTF-8 text, since a pre-signed link can only check what the client declares.
+6. **Split and index.** The text is split into passages of about 2 KB with about 100 characters of overlap, and written to OpenSearch with the bulk API.
+7. **Mark searchable.** The document becomes `SEARCHABLE` and the worker deletes the queue message. Typically this takes about a minute after the upload finishes.
+
+### When things go differently
+
+| Situation | Who handles it | What happens |
+|---|---|---|
+| The user never uploads | Cleanup CronJob, every 5 minutes | A document still `UPLOADING` 10 minutes past its deadline becomes `EXPIRED`, but only after confirming that no file exists in S3; if one does, the job queues an `index` message for it instead. S3 sends no event when nothing arrives, so a scheduled check is needed. Unfinished multipart uploads are removed by an S3 lifecycle rule after 1 day. |
+| The file arrives more than 10 minutes after the deadline | Worker | Judged by the arrival time in the event. The worker moves the document `UPLOADING → EXPIRED` (a conditional update); if the document is now `EXPIRED`, it deletes that file version from S3 using the version ID in the event, and the user is asked to upload again. In any other state the event is a retried upload: it is ignored and nothing is deleted. |
+| The same link is used twice (a retried upload) | Worker | The second event carries a different S3 version from the one being processed, so the worker ignores it and deletes nothing. Downloads keep serving the version that was processed. |
+| The content check fails | Worker | The document becomes `FAILED` with a reason, and the user is told why. |
 
 ## Message queue, retries, idempotency, and dead-letter handling
 
-TODO
+**SQS Standard with a dead-letter queue (DLQ).** Messages are small; the file stays in S3.
+
+- **Index after an upload:** the S3 `ObjectCreated` event itself. The worker reads `docId` and the version from the key `docs/{docId}/v{n}`.
+- **Everything else** is `{docId, action}`, for `delete` and `acl` (after a delete or a sharing change) and `index` (for a file the cleanup job found that was never processed). These go through an **outbox**: the message is inserted into an `outbox` table in the same transaction as the change, and a small relay loop sends unsent rows to SQS and marks them sent. If the API crashes right after committing, the message is still sent; if the relay sends a row twice, the idempotent workers make that harmless.
+
+| Setting | Value | Why |
+|---|---|---|
+| Visibility timeout | Longer than the slowest document; the worker extends it while a large file is still being processed | A message being worked on must not reappear and be picked up by a second worker |
+| Retries | Up to 5 receives (`maxReceiveCount`), then the message moves to the DLQ | A file that always fails stops wasting workers |
+| DLQ | Alarm on any message; keep messages 14 days; after a fix, redrive them back to the main queue | A failure is noticed and can be replayed, instead of expiring silently |
+
+If a worker crashes, it never deletes the message. The message reappears after the visibility timeout, and the next worker finds the document still `PROCESSING` for the same S3 version and finishes the job. A document that keeps failing ends up in the DLQ, which raises an alarm.
+
+### Making retries safe
+
+SQS Standard can deliver a message more than once, and a crash means some work is repeated. Every step is therefore idempotent: running it twice gives the same result as running it once.
+
+| Technique | Effect |
+|---|---|
+| Re-read the document's status from PostgreSQL before acting | For a deleted document, the worker first deletes its passages by `docId` (harmless if there are none), then acknowledges the message. A worker that crashed after writing passages for a since-deleted document therefore leaves nothing behind |
+| Fixed passage IDs (`{docId}-{chunkNo}`) | Writing a passage again overwrites it instead of adding a duplicate |
+| A document's text never changes after upload (there is no edit) | A late or repeated write always writes the same text, so it cannot replace newer content |
+| Set values, never increment (`status = 'SEARCHABLE'`, not `count = count + 1`) | Repeating a database write changes nothing |
+| `Idempotency-Key` on `POST /v1/documents` | A retried request returns the same document instead of creating a new one |
+
+Workers always read from the primary database, never a read replica, because a replica can lag behind the change that triggered the message. Replicas serve the API's reads, such as the search re-check.
+
+Because ordering and duplicates are handled this way, the queue does not need to guarantee order or exactly-once delivery. Workers would need these checks with any queue anyway: no queue can promise that a message is processed exactly once.
 
 ## Search indexing and DB ↔ search engine consistency
 
-TODO
+**PostgreSQL is the source of truth; OpenSearch is a copy built for search.** The copy can lag behind, so anything that must be correct, such as status and permissions, is decided by the database. When the two disagree, the database wins. Passages therefore carry no `status` and no content version: status is decided by the database re-check, and a document's text never changes after upload.
+
+### Freshness
+
+Writes become searchable after an OpenSearch refresh. The refresh interval is about 30 seconds instead of the default 1 second, which allows much higher indexing throughput and still fits the 5-minute target: a document is typically searchable about a minute after its upload finishes.
+
+### Deletion, step by step
+
+| When | Who | What |
+|---|---|---|
+| Immediately | `api` | Marks the document `DELETED` (a conditional update) and queues a `delete` message. Searches stop returning it at once, because the database re-check before results are returned only keeps `SEARCHABLE` documents (see [Authorization](#authorization-and-permission-filtering)). Download requests are refused. |
+| Seconds later | `delete-worker` | Deletes all of the document's passages from OpenSearch by `docId`, then records `search_cleared_at`. |
+| If indexing was still running | `index-worker` | After writing, it re-reads `status` and `acl_version`. If the document was deleted meanwhile, it deletes the passages it just wrote; if sharing changed, it applies the new `acl` to them. |
+| Next daily run, within about a day | Purge CronJob | For deleted documents whose `search_cleared_at` is set: deletes every S3 version by version ID, then the document's grants and row. An audit record remains. |
+
+The document row stays until the purge, so a late message for this document still finds it `DELETED` and is handled as above. If an upload event arrives after the row is gone (the user deleted an unfinished upload and still finished uploading before the link expired), the worker deletes that S3 version from the event.
+
+### Rebuilding the index
+
+Because the copy can always be rebuilt from S3 and PostgreSQL, the index can be recreated at any time, for example to change the analyzer or the number of shards: build a new index, fill it from the source of truth, then switch the alias.
 
 ## Authorization and permission filtering
 
-TODO
+[![Search with permission filtering](diagrams/search-permissions.sequence.png)](diagrams/search-permissions.sequence.html)
+
+Interactive version: [`diagrams/search-permissions.sequence.html`](diagrams/search-permissions.sequence.html) · source: [`diagrams/search-permissions.sequence.json`](diagrams/search-permissions.sequence.json)
+
+### Model
+
+Every document has one owner, who can share it read-only with users or groups. Permissions are stored as typed principals, such as `user:12` or `group:7`, in `document_grants`. Only two functions decide access:
+
+- `principals(user)` returns the user's identity list: `user:12` plus one `group:<id>` for every group they belong to.
+- `authorize(user, action, doc)` checks a single action (view, download, delete, share) against PostgreSQL.
+
+### Filtering search results
+
+Each passage in OpenSearch carries an `acl` list with everyone allowed to read it, for example `["user:12", "group:7"]`. Groups are stored as group IDs, not expanded into members, so adding someone to a group changes only `group_members` and no search data.
+
+1. The API builds the identity list from PostgreSQL.
+2. OpenSearch runs the keyword query with the list as a `terms` filter on `acl`. As a filter it does not affect ranking and can be cached, and because it runs inside the query, pagination stays correct.
+3. Before returning a page, the API re-checks those 10–20 documents in PostgreSQL, joining `group_members` directly, and keeps only documents that are still `SEARCHABLE` and still readable by the user. This also hides a document the moment it is deleted, before its passages are removed.
+
+OpenSearch provides speed; PostgreSQL provides correctness.
+
+### Revoking access
+
+Any sharing change (share or stop sharing) updates `document_grants` and increments `documents.acl_version` in one transaction; `api` then queues an `acl` message. `index-worker` reads the current grants from the primary database and rewrites `acl` on the document's passages (about 1,000), skipping passages that already carry a newer `acl_version`, so an older, slower update can never overwrite a newer one. An indexing run that overlaps a sharing change re-reads `acl_version` after writing and applies the new `acl`, so no passage keeps old permissions. This usually takes seconds, and up to about a minute.
+
+- **Stop sharing:** until the passages are rewritten, the re-check in step 3 removes the document, so the user never sees it.
+- **Share:** the new reader can search the document once the passages are rewritten, usually within a minute. Opening it by link works at once, because `authorize()` reads PostgreSQL.
+
+Read replicas can lag behind the primary by a fraction of a second. For about 10 seconds after a document's sharing changes, or after a user is removed from a group, the re-check reads from the primary instead (Redis remembers what changed recently). If Redis is unavailable, every re-check goes to the primary: slower, but never wrong.
+
+### Other safeguards
+
+- No permission returns `404`, so a document ID reveals nothing.
+- Under heavy load, search results may be cached briefly. The cache holds only raw OpenSearch hits, keyed by query and identity list, and the re-check in step 3 always runs on them, so a cached result can never bring back a deleted or unshared document.
+- Download links expire in 5 minutes. A link that was already issued cannot be revoked; that short window is accepted.
+- The identity list goes into a single `terms` filter, which OpenSearch limits to 65,536 values by default. Typical users belong to a few to a few dozen groups; far beyond that, a dedicated authorization service would be needed.
+
+### Adding more permission types later
+
+New kinds of access are new principal types, without changing the architecture: `org:5` for "everyone in the organization", `public` for public documents, `role:reviewer` plus a `PENDING_REVIEW` status for a review step. Only `principals()`, `authorize()` and the values written into `acl` change.
 
 ## Scaling services, workers, and search infrastructure
 

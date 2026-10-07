@@ -61,7 +61,7 @@
           "cron",
           "s3"
         ],
-        "note": "Hidden at once; a delete job removes the passages; after 30 days a CronJob deletes every S3 version and the metadata."
+        "note": "Hidden at once; a delete job removes the passages; the next daily purge deletes every S3 version and the metadata."
       }
     ],
     "legend": {

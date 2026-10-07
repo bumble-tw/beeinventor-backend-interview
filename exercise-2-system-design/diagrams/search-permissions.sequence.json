@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Search with permission filtering",
+    "locale": "en",
+    "output": "search-permissions.sequence.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      600
+    ],
+    "views": [
+      {
+        "id": "identity",
+        "label": "Build the identity list",
+        "focus": [
+          "browser",
+          "api",
+          "redis",
+          "aurora"
+        ],
+        "note": "Rate limit, then the user's ID plus every group they belong to."
+      },
+      {
+        "id": "search",
+        "label": "Search with a filter",
+        "focus": [
+          "api",
+          "opensearch"
+        ],
+        "note": "Keywords plus a terms filter on acl, inside the query."
+      },
+      {
+        "id": "recheck",
+        "label": "Re-check before returning",
+        "focus": [
+          "api",
+          "redis",
+          "aurora",
+          "browser"
+        ],
+        "note": "PostgreSQL confirms each document is still searchable and readable; recently changed documents are read from the primary."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "api"
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "Redis"
+    },
+    {
+      "id": "aurora",
+      "type": "database",
+      "label": "PostgreSQL"
+    },
+    {
+      "id": "opensearch",
+      "type": "database",
+      "label": "OpenSearch"
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 266,
+      "label": "Identity list"
+    },
+    {
+      "from": 282,
+      "to": 350,
+      "label": "Search"
+    },
+    {
+      "from": 366,
+      "to": 510,
+      "label": "Re-check"
+    }
+  ],
+  "messages": [
+    {
+      "from": "browser",
+      "to": "api",
+      "y": 180,
+      "label": "GET /v1/search?q=…",
+      "variant": "emphasis"
+    },
+    {
+      "from": "api",
+      "to": "redis",
+      "y": 216,
+      "label": "rate limit"
+    },
+    {
+      "from": "api",
+      "to": "aurora",
+      "y": 252,
+      "label": "user + groups → identity list"
+    },
+    {
+      "from": "api",
+      "to": "opensearch",
+      "y": 300,
+      "label": "keywords + filter: acl ∈ identity list",
+      "variant": "emphasis"
+    },
+    {
+      "from": "opensearch",
+      "to": "api",
+      "y": 336,
+      "label": "page of documents + highlights",
+      "variant": "return"
+    },
+    {
+      "from": "api",
+      "to": "redis",
+      "y": 384,
+      "label": "permissions changed recently?"
+    },
+    {
+      "from": "api",
+      "to": "aurora",
+      "y": 420,
+      "label": "re-check this page (replica, or primary if changed)",
+      "variant": "security"
+    },
+    {
+      "from": "aurora",
+      "to": "api",
+      "y": 456,
+      "label": "still SEARCHABLE and readable",
+      "variant": "return"
+    },
+    {
+      "from": "api",
+      "to": "browser",
+      "y": 492,
+      "label": "200 results (unreadable ones dropped)",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "api",
+      "from": 174,
+      "to": 500,
+      "type": "backend"
+    }
+  ]
+}

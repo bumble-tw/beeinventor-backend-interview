@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Upload and background processing",
+    "locale": "en",
+    "output": "upload-processing.sequence.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      660
+    ],
+    "views": [
+      {
+        "id": "create",
+        "label": "Create the record",
+        "focus": [
+          "browser",
+          "api",
+          "aurora"
+        ],
+        "note": "The API records an UPLOADING document and returns a pre-signed upload link."
+      },
+      {
+        "id": "upload",
+        "label": "Upload to S3",
+        "focus": [
+          "browser",
+          "s3",
+          "sqs"
+        ],
+        "note": "The file goes straight to S3; S3 queues the processing job."
+      },
+      {
+        "id": "process",
+        "label": "Process",
+        "focus": [
+          "sqs",
+          "worker",
+          "aurora",
+          "s3",
+          "opensearch"
+        ],
+        "note": "A worker claims the document (or resumes after a crash), checks the file, writes passages and marks it searchable."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "api"
+    },
+    {
+      "id": "aurora",
+      "type": "database",
+      "label": "PostgreSQL"
+    },
+    {
+      "id": "s3",
+      "type": "cloud",
+      "label": "S3"
+    },
+    {
+      "id": "sqs",
+      "type": "messagebus",
+      "label": "SQS"
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "index-worker"
+    },
+    {
+      "id": "opensearch",
+      "type": "database",
+      "label": "OpenSearch"
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 266,
+      "label": "Create the record"
+    },
+    {
+      "from": 282,
+      "to": 350,
+      "label": "Upload"
+    },
+    {
+      "from": 366,
+      "to": 582,
+      "label": "Process"
+    }
+  ],
+  "messages": [
+    {
+      "from": "browser",
+      "to": "api",
+      "y": 180,
+      "label": "POST /v1/documents + Idempotency-Key",
+      "variant": "emphasis"
+    },
+    {
+      "from": "api",
+      "to": "aurora",
+      "y": 216,
+      "label": "insert UPLOADING + owner grant"
+    },
+    {
+      "from": "api",
+      "to": "browser",
+      "y": 252,
+      "label": "201 + pre-signed POST (15 min)",
+      "variant": "return"
+    },
+    {
+      "from": "browser",
+      "to": "s3",
+      "y": 300,
+      "label": "upload file (1 B–20 MB)",
+      "variant": "emphasis"
+    },
+    {
+      "from": "s3",
+      "to": "sqs",
+      "y": 336,
+      "label": "ObjectCreated",
+      "variant": "dashed"
+    },
+    {
+      "from": "sqs",
+      "to": "worker",
+      "y": 384,
+      "label": "deliver job"
+    },
+    {
+      "from": "worker",
+      "to": "aurora",
+      "y": 420,
+      "label": "claim: → PROCESSING, record S3 version"
+    },
+    {
+      "from": "worker",
+      "to": "s3",
+      "y": 456,
+      "label": "read file; check size + UTF-8"
+    },
+    {
+      "from": "worker",
+      "to": "opensearch",
+      "y": 492,
+      "label": "bulk write ~2 KB passages",
+      "variant": "emphasis"
+    },
+    {
+      "from": "worker",
+      "to": "aurora",
+      "y": 528,
+      "label": "mark SEARCHABLE"
+    },
+    {
+      "from": "worker",
+      "to": "sqs",
+      "y": 564,
+      "label": "delete message",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "api",
+      "from": 174,
+      "to": 258,
+      "type": "backend"
+    },
+    {
+      "participant": "worker",
+      "from": 378,
+      "to": 570,
+      "type": "backend"
+    }
+  ]
+}
