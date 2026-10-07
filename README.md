@@ -61,4 +61,6 @@ Each exercise part is committed separately so the solving process can be followe
 4. Exercise 1 — Part B: prefix search
 5. Exercise 1 — brief examples for Parts A/B
 6. Exercise 1 — Part C: wildcard search
-7. Exercise 2 — system design
+7. Exercise 2 — assumptions, capacity, architecture
+8. Exercise 2 — data flow and consistency
+9. Exercise 2 — operations and discussion scenarios

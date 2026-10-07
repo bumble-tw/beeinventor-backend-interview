@@ -1,0 +1,377 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Distributed Document Search Platform",
+    "locale": "en",
+    "output": "high-level-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1290,
+      720
+    ],
+    "views": [
+      {
+        "id": "search",
+        "label": "Search",
+        "focus": [
+          "browser",
+          "alb",
+          "api",
+          "redis",
+          "opensearch",
+          "aurora"
+        ],
+        "note": "Keywords and a permission filter in OpenSearch, then a permission re-check in PostgreSQL."
+      },
+      {
+        "id": "upload",
+        "label": "Upload",
+        "focus": [
+          "browser",
+          "alb",
+          "api",
+          "aurora",
+          "s3",
+          "sqs"
+        ],
+        "note": "The API creates the document record and signs an upload link; the file goes straight to S3, which queues a job."
+      },
+      {
+        "id": "background",
+        "label": "Background processing",
+        "focus": [
+          "sqs",
+          "workers",
+          "s3",
+          "opensearch",
+          "aurora"
+        ],
+        "note": "Workers build the passage index and mark the document searchable."
+      },
+      {
+        "id": "delete",
+        "label": "Delete",
+        "focus": [
+          "api",
+          "aurora",
+          "sqs",
+          "workers",
+          "opensearch",
+          "cron",
+          "s3"
+        ],
+        "note": "Hidden at once; a delete job removes the passages; after 30 days a CronJob deletes every S3 version and the metadata."
+      }
+    ],
+    "legend": {
+      "mode": "all",
+      "entries": {
+        "backend": {
+          "label": "Our code on EKS"
+        },
+        "database": {
+          "label": "AWS managed data store"
+        },
+        "cloud": {
+          "label": "AWS managed service"
+        },
+        "messagebus": {
+          "label": "AWS managed queue"
+        },
+        "security": {
+          "label": "Entry point"
+        },
+        "external": {
+          "label": "Users"
+        },
+        "frontend": {
+          "visible": false
+        }
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser",
+      "sublabel": "1M users",
+      "pos": [
+        40,
+        180
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "alb",
+      "type": "security",
+      "label": "ALB + AWS WAF",
+      "sublabel": "entry point",
+      "pos": [
+        270,
+        180
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "api",
+      "sublabel": "HPA",
+      "tag": "EKS",
+      "pos": [
+        520,
+        180
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "ElastiCache Redis",
+      "sublabel": "rate limits · cache",
+      "pos": [
+        520,
+        40
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "opensearch",
+      "type": "database",
+      "label": "OpenSearch Service",
+      "sublabel": "passage index",
+      "pos": [
+        800,
+        180
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "observability",
+      "type": "cloud",
+      "label": "CloudWatch + X-Ray",
+      "sublabel": "OpenTelemetry",
+      "tag": "all pods",
+      "pos": [
+        1080,
+        40
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "cron",
+      "type": "backend",
+      "label": "CronJobs",
+      "sublabel": "expire · purge",
+      "tag": "EKS",
+      "pos": [
+        270,
+        400
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "aurora",
+      "type": "database",
+      "label": "Aurora PostgreSQL",
+      "sublabel": "metadata · permissions",
+      "pos": [
+        520,
+        400
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "workers",
+      "type": "backend",
+      "label": "index-worker / delete-worker",
+      "sublabel": "KEDA",
+      "tag": "EKS",
+      "pos": [
+        777,
+        400
+      ],
+      "size": [
+        196,
+        64
+      ]
+    },
+    {
+      "id": "sqs",
+      "type": "messagebus",
+      "label": "SQS + DLQ",
+      "sublabel": "processing jobs",
+      "pos": [
+        1080,
+        400
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "s3",
+      "type": "cloud",
+      "label": "S3",
+      "sublabel": "original files",
+      "pos": [
+        800,
+        570
+      ],
+      "size": [
+        150,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "AWS region · 3 Availability Zones",
+      "wraps": [
+        "alb",
+        "api",
+        "redis",
+        "opensearch",
+        "observability",
+        "cron",
+        "aurora",
+        "workers",
+        "sqs",
+        "s3"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "browser-alb",
+      "from": "browser",
+      "to": "alb",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "alb-api",
+      "from": "alb",
+      "to": "api",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-redis",
+      "from": "api",
+      "to": "redis",
+      "label": "rate limit",
+      "labelDy": -25
+    },
+    {
+      "id": "api-opensearch",
+      "from": "api",
+      "to": "opensearch",
+      "label": "keywords + ACL filter",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-aurora",
+      "from": "api",
+      "to": "aurora",
+      "label": "create record · re-check permissions",
+      "labelDy": 24
+    },
+    {
+      "id": "browser-s3",
+      "from": "browser",
+      "to": "s3",
+      "label": "upload via pre-signed URL",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [
+        [
+          115,
+          602
+        ]
+      ]
+    },
+    {
+      "id": "s3-sqs",
+      "from": "s3",
+      "to": "sqs",
+      "label": "ObjectCreated",
+      "variant": "dashed"
+    },
+    {
+      "id": "sqs-workers",
+      "from": "sqs",
+      "to": "workers",
+      "label": "jobs"
+    },
+    {
+      "id": "s3-workers",
+      "from": "s3",
+      "to": "workers",
+      "label": "read file",
+      "labelDx": 45
+    },
+    {
+      "id": "workers-opensearch",
+      "from": "workers",
+      "to": "opensearch",
+      "label": "write passages"
+    },
+    {
+      "id": "workers-aurora",
+      "from": "workers",
+      "to": "aurora",
+      "label": "mark searchable"
+    },
+    {
+      "id": "cron-aurora",
+      "from": "cron",
+      "to": "aurora",
+      "label": "expire / purge"
+    },
+    {
+      "id": "api-sqs",
+      "from": "api",
+      "to": "sqs",
+      "label": "delete job",
+      "fromSide": "top",
+      "toSide": "top"
+    },
+    {
+      "id": "cron-s3",
+      "from": "cron",
+      "to": "s3",
+      "label": "delete all versions",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ]
+}
