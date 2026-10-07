@@ -1,5 +1,19 @@
 # Exercise 2 — Distributed Document Search Platform
 
+A design for a platform where users upload, view, search and delete text documents, sized for 1 million users, 10 million documents and 3,000 searches per second. This is a design document with diagrams; there is no code.
+
+**In one paragraph:** files go straight from the browser to S3; S3 then queues a job, and workers split each document into small passages and index them in OpenSearch. PostgreSQL holds every document's status and permissions and is always the source of truth, so a search result is re-checked against it before a user sees it. Every background step can safely run twice, which is how retries and crashes are handled.
+
+**Diagrams** appear as images in this page. Each one also has an interactive HTML version; GitHub shows HTML files as source, so download the file and open it in a browser to use it.
+
+## Contents
+
+- **Foundations:** [Assumptions](#assumptions) · [Capacity estimation](#capacity-estimation) · [High-level architecture](#high-level-architecture)
+- **Data and APIs:** [API design](#api-design) · [Core data model](#core-data-model) · [Document storage and metadata storage](#document-storage-and-metadata-storage)
+- **How data flows:** [Upload and asynchronous processing](#upload-and-asynchronous-processing-pipeline) · [Message queue, retries and DLQ](#message-queue-retries-idempotency-and-dead-letter-handling) · [Indexing and consistency](#search-indexing-and-db--search-engine-consistency) · [Authorization](#authorization-and-permission-filtering)
+- **Running it:** [Scaling](#scaling-services-workers-and-search-infrastructure) · [Deployment](#deployment-containers-and-kubernetes) · [Observability](#observability-logs-metrics-tracing-incident-investigation)
+- **Answers:** [Discussion scenarios](#discussion-scenarios) · [Trade-offs and alternatives](#trade-offs-and-alternatives-considered)
+
 ## Assumptions
 
 The brief gives the scale and the requirements. Everything below is an assumption I added to make the design concrete.
@@ -318,7 +332,9 @@ Interactive version: [`diagrams/upload-processing.sequence.html`](diagrams/uploa
 1. **Create the record.** The browser calls `POST /v1/documents`. The API checks the declared size (≤ 20 MB), inserts the document as `UPLOADING` with a 15-minute deadline, inserts the owner's grant, and returns a pre-signed **POST** link.
 2. **Upload straight to S3.** The link's policy fixes the key (`docs/{docId}/v1`) and limits the size to 1 B–20 MB, so S3 itself rejects anything else. File bytes never pass through the API.
 3. **S3 starts the processing.** When the file arrives, S3 sends an `ObjectCreated` event to SQS. Completion is taken from this event, not from the browser, so it still works if the user closes the tab.
-4. **Claim the document.** A worker moves the document from `UPLOADING` to `PROCESSING` with a conditional update and records which S3 version it is processing. If the document is already `PROCESSING` for that same S3 version and was claimed longer ago than the queue's visibility timeout, an earlier worker crashed half-way, so this worker takes over; if the claim is recent, another worker is still on it and this one stops. A worker that extends the visibility timeout on a large file also refreshes `claimed_at`, so it is never mistaken for a crashed one. The deadline is checked against the time the file arrived in S3 (from the event), not the time the worker runs: a file that arrived up to 10 minutes after the deadline is accepted, even if the queue was backed up.
+4. **Claim the document.** A worker moves the document from `UPLOADING` to `PROCESSING` with a conditional update, and records which S3 version it is processing and when (`claimed_at`).
+   - **Taking over after a crash:** if the document is already `PROCESSING` for the same S3 version and the claim is older than the queue's visibility timeout, the earlier worker crashed, so this worker takes over. If the claim is recent, another worker is still on it and this one stops. A worker busy with a large file refreshes `claimed_at` whenever it extends the visibility timeout, so it is never mistaken for a crashed one.
+   - **Late files:** the 15-minute deadline is checked against when the file arrived in S3 (from the event), not when the worker runs. A file that arrived up to 10 minutes late is accepted, even if the queue was backed up.
 5. **Check the content.** The worker reads the file from S3 and checks the real size and that it is UTF-8 text, since a pre-signed link can only check what the client declares.
 6. **Split and index.** The text is split into passages of about 2 KB with about 100 characters of overlap, and written to OpenSearch with the bulk API.
 7. **Mark searchable.** The document becomes `SEARCHABLE` and the worker deletes the queue message. Typically this takes about a minute after the upload finishes.

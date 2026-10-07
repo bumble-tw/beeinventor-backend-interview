@@ -1,6 +1,6 @@
 # BeeInventor — DasIoT Backend Technical Interview
 
-Language: **TypeScript** (Node.js 24, standard library only at runtime).
+Exercise 1 is code in **TypeScript** (Node.js 24, standard library only at runtime). Exercise 2 is a design document with diagrams (no code).
 
 | Exercise | Folder | Summary |
 |---|---|---|
