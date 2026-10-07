@@ -1,0 +1,305 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Deployment on EKS",
+    "locale": "en",
+    "output": "eks-deployment.html",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1200,
+      640
+    ],
+    "legend": {
+      "mode": "all",
+      "entries": {
+        "backend": {
+          "label": "Runs on EKS"
+        },
+        "cloud": {
+          "label": "AWS managed service"
+        },
+        "messagebus": {
+          "label": "AWS managed queue"
+        },
+        "security": {
+          "label": "Access and secrets"
+        },
+        "external": {
+          "label": "Delivery pipeline"
+        },
+        "database": {
+          "visible": false
+        },
+        "frontend": {
+          "visible": false
+        }
+      }
+    },
+    "views": [
+      {
+        "id": "ship",
+        "label": "Shipping a change",
+        "focus": [
+          "ci",
+          "ecr",
+          "argo",
+          "api",
+          "workers",
+          "cron"
+        ],
+        "note": "CI builds an image tagged with the commit SHA and updates the manifest; Argo CD syncs every workload with a rolling update."
+      },
+      {
+        "id": "scale",
+        "label": "Scaling",
+        "focus": [
+          "alb",
+          "api",
+          "sqs",
+          "workers",
+          "karpenter"
+        ],
+        "note": "HPA scales api on CPU, KEDA scales workers on queue depth, Karpenter adds nodes."
+      },
+      {
+        "id": "access",
+        "label": "Access",
+        "focus": [
+          "identity",
+          "secrets",
+          "api",
+          "workers",
+          "cron"
+        ],
+        "note": "Each workload gets its own IAM role through Pod Identity; passwords come from Secrets Manager."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "ci",
+      "type": "external",
+      "label": "CI",
+      "sublabel": "tests · build image",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "ecr",
+      "type": "cloud",
+      "label": "ECR",
+      "sublabel": "images by commit SHA",
+      "pos": [
+        40,
+        190
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "alb",
+      "type": "cloud",
+      "label": "ALB + AWS WAF",
+      "sublabel": "public entry",
+      "pos": [
+        40,
+        340
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "argo",
+      "type": "backend",
+      "label": "Argo CD",
+      "sublabel": "GitOps sync",
+      "pos": [
+        320,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "cron",
+      "type": "backend",
+      "label": "CronJobs",
+      "sublabel": "cleanup · purge",
+      "pos": [
+        580,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "workers",
+      "type": "backend",
+      "label": "index-worker / delete-worker",
+      "sublabel": "Deployments · KEDA",
+      "pos": [
+        580,
+        190
+      ],
+      "size": [
+        230,
+        64
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "api",
+      "sublabel": "Deployment · HPA · PDB",
+      "pos": [
+        320,
+        340
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "karpenter",
+      "type": "backend",
+      "label": "Karpenter",
+      "sublabel": "EC2 nodes in 3 AZs",
+      "pos": [
+        580,
+        340
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "sqs",
+      "type": "messagebus",
+      "label": "SQS + DLQ",
+      "sublabel": "queue depth",
+      "pos": [
+        960,
+        190
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "identity",
+      "type": "security",
+      "label": "IAM via Pod Identity",
+      "sublabel": "one role per workload",
+      "pos": [
+        960,
+        40
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "secrets",
+      "type": "security",
+      "label": "Secrets Manager",
+      "sublabel": "database passwords",
+      "pos": [
+        320,
+        480
+      ],
+      "size": [
+        170,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "EKS cluster · private subnets · 3 AZs",
+      "wraps": [
+        "argo",
+        "cron",
+        "workers",
+        "api",
+        "karpenter"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "ci-ecr",
+      "from": "ci",
+      "to": "ecr",
+      "label": "push image",
+      "labelDy": 24
+    },
+    {
+      "id": "ci-argo",
+      "from": "ci",
+      "to": "argo",
+      "label": "update manifest",
+      "variant": "emphasis"
+    },
+    {
+      "id": "argo-cron",
+      "from": "argo",
+      "to": "cron",
+      "label": "syncs all"
+    },
+    {
+      "id": "alb-api",
+      "from": "alb",
+      "to": "api",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "sqs-workers",
+      "from": "sqs",
+      "to": "workers",
+      "label": "jobs; depth drives KEDA",
+      "labelDy": 24
+    },
+    {
+      "id": "identity-workers",
+      "from": "identity",
+      "to": "workers",
+      "label": "one role per workload",
+      "variant": "security"
+    },
+    {
+      "id": "secrets-api",
+      "from": "secrets",
+      "to": "api",
+      "label": "passwords for each workload",
+      "variant": "security"
+    },
+    {
+      "id": "ecr-workers",
+      "from": "ecr",
+      "to": "workers",
+      "label": "every workload pulls its image",
+      "variant": "dashed"
+    }
+  ]
+}

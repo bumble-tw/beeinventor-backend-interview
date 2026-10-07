@@ -182,7 +182,7 @@
       "id": "cron",
       "type": "backend",
       "label": "CronJobs",
-      "sublabel": "expire · purge",
+      "sublabel": "cleanup · purge",
       "tag": "EKS",
       "pos": [
         270,

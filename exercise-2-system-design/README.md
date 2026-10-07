@@ -121,7 +121,7 @@ Interactive version (open locally in a browser): [`diagrams/high-level-architect
 | **ALB + AWS WAF** | Entry point: TLS, load balancing, basic bot and rate rules | Managed load balancer that EKS can configure directly (AWS Load Balancer Controller) |
 | **`api`** (EKS) | Authorization, search, sharing, signing upload/download links, and deletion (marks the document deleted and queues a delete job) | Stateless, so it scales out on CPU with HPA |
 | **`index-worker`, `delete-worker`** (EKS) | Process queued jobs: `index-worker` builds search data and rewrites permissions on passages; `delete-worker` removes search data | Scale on queue depth with KEDA, down to a small baseline when idle |
-| **CronJobs** (EKS) | Every 5 minutes, expire abandoned uploads. Daily, permanently remove deleted documents (once their search data is cleared), and expired or failed documents older than 7 days: every S3 version (deleted by version ID) and the metadata | Simple scheduled work next to the rest of our code |
+| **CronJobs** (EKS) | Every 5 minutes, expire abandoned uploads and count stuck documents for alerting. Daily, permanently remove deleted documents (once their search data is cleared), and expired or failed documents older than 7 days: every S3 version (deleted by version ID) and the metadata | Simple scheduled work next to the rest of our code |
 | **S3** | Original files | Durable and cheap; pre-signed URLs let browsers upload and download directly, so file traffic never passes through the API; emits an event when a file arrives |
 | **Aurora PostgreSQL** | Metadata, permissions, document status | Transactions and conditional updates for the document state machine; read replicas for permission checks |
 | **SQS Standard + DLQ** | Processing jobs | Retries and a dead-letter queue are built in; workers are idempotent, so the queue does not need to guarantee order or exactly-once delivery |
@@ -274,7 +274,7 @@ document_grants (doc_id, principal_type, principal_id, permission, -- 'user' | '
                  PRIMARY KEY (doc_id, principal_type, principal_id))
 
 audit_log       (id PK, actor_id, action, doc_id, created_at)     -- deletes, purges, sharing changes
-outbox          (id PK, doc_id, action, created_at, sent_at)      -- messages waiting to be sent to SQS
+outbox          (id PK, doc_id, action, trace_context, created_at, sent_at)  -- messages waiting to be sent to SQS
 ```
 
 Main indexes: `documents (owner_id, created_at)` for "my documents", `document_grants (principal_type, principal_id)` for "shared with me", `group_members (user_id)` to look up a user's groups, and partial indexes on `UPLOADING` and `DELETED` rows for the scheduled jobs.
@@ -431,38 +431,148 @@ New kinds of access are new principal types, without changing the architecture: 
 
 ## Scaling services, workers, and search infrastructure
 
-TODO
+### Everyday scaling
+
+| Layer | How it scales | Based on | How long it takes |
+|---|---|---|---|
+| `api` pods | HPA (min 10, max 100) | CPU | 1–3 minutes |
+| `index-worker`, `delete-worker` pods | KEDA | SQS queue depth | 1–3 minutes |
+| EKS nodes | Karpenter adds EC2 nodes when pods do not fit | Pending pods | 1–2 minutes more |
+| Aurora read replicas | Aurora Auto Scaling | CPU, connections | About 10 minutes |
+| OpenSearch | Planned from load tests and alarms; data nodes added manually or on a schedule | CPU, search queue, JVM memory | Tens of minutes for nodes; hours for an extra replica (each shard is copied) |
+
+OpenSearch is the bottleneck (every search asks every shard, see [Capacity estimation](#capacity-estimation)) and also the slowest layer to grow. Its storage and shards are planned for 2× today's data, and its replicas are sized by load test to handle about **2× the search peak** (6,000 searches/s is the load-test target, not a measured number). Sizing it for 10× would leave most of it idle; known busy periods are scaled ahead of time instead.
+
+### When search traffic jumps
+
+A sudden spike arrives faster than OpenSearch can grow, so the rule is **protect first, then scale**. Protections are applied in this order, cheapest first:
+
+| Step | What happens | What is given up |
+|---|---|---|
+| 1. Give indexing's capacity to search | Lower the worker limit and lengthen the OpenSearch refresh interval | Freshness: new uploads may take longer than 5 minutes to appear, but they all arrive |
+| 2. Cache popular queries | Keep raw OpenSearch hits for 30–60 seconds, keyed by query and identity list; the permission re-check still runs on every request | Results can be up to a minute old |
+| 3. Lighter queries | One highlighted passage per document instead of three; return partial results when a time limit is hit | Some search quality |
+| 4. Per-user rate limit | A token bucket in Redis; AWS WAF blocks obvious bots | Very heavy users get `429` |
+| 5. Global limit | Cap concurrent OpenSearch queries; reject the rest with `429` and `Retry-After` | Some users wait, but everyone else stays fast |
+
+**The permission re-check is never skipped**, at any step. Step 5 matters because without it OpenSearch's own queue fills up and every request times out together.
+
+Meanwhile, the API scales out in minutes, Aurora adds replicas in about ten, and OpenSearch nodes follow. When traffic falls, the protections are removed in reverse order.
+
+**First, find out where the traffic comes from:** real users (caching helps most), a scraper (rate limits and WAF), or our own bug such as a client retry loop (fix it and rate-limit meanwhile).
 
 ## Deployment (containers and Kubernetes)
 
-TODO
+[![Deployment on EKS](diagrams/eks-deployment.png)](diagrams/eks-deployment.html)
+
+Interactive version: [`diagrams/eks-deployment.html`](diagrams/eks-deployment.html) · source: [`diagrams/eks-deployment.json`](diagrams/eks-deployment.json)
+
+Only our own stateless code and a few cluster add-ons (Argo CD, Karpenter, the log and telemetry agents) run on Kubernetes; everything that stores data is an AWS managed service. The diagram leaves the data stores out on purpose; they are shown in the [High-level architecture](#high-level-architecture).
+
+| Workload | Kubernetes object | Scaling |
+|---|---|---|
+| `api` | Deployment behind the ALB | HPA |
+| `index-worker`, `delete-worker` | Deployments, no inbound traffic | KEDA |
+| Cleanup (every 5 minutes), purge (daily) | CronJobs, never two runs at once | — |
+| Fluent Bit (logs), ADOT collector (metrics and traces) | DaemonSets, one per node | Grows with the nodes |
+
+Nodes are EC2 instances in private subnets, spread across three Availability Zones and managed by Karpenter.
+
+### What keeps it running
+
+| Concern | What we do | Why |
+|---|---|---|
+| **Health checks** | *Readiness* decides whether a pod gets traffic (checks the pod has started and its database connections are ready). *Liveness* decides whether to restart it (checks only the process itself). Neither checks OpenSearch; a slow OpenSearch is handled inside search requests by the degradation steps in [Scaling](#scaling-services-workers-and-search-infrastructure). | If a probe depended on OpenSearch or the database, one slow dependency would pull every pod out of service at once (readiness) or restart them all (liveness), and uploads and downloads would fail along with search. |
+| **Rolling updates** | New pods start and pass readiness before old ones stop (`maxUnavailable: 0`). Images are tagged with the commit SHA. Database changes are made in two steps: first add (old and new code both work), later remove. | No drop in capacity during a deploy; a bad version stops rolling out on its own and can be rolled back; old and new pods run side by side during the rollout. |
+| **Graceful shutdown** | `api` leaves the load balancer, then finishes in-flight requests. A worker stops taking new messages and finishes its current document; if it is cut off, it never deleted the message, so another worker takes over (see [Message queue](#message-queue-retries-idempotency-and-dead-letter-handling)). | Deploys and scale-downs lose no work. |
+| **Spread and maintenance** | Pods are spread evenly across the three AZs; a PodDisruptionBudget keeps at least 80% of `api` running while nodes are replaced. Every pod sets CPU and memory requests and limits. | One AZ failing leaves two thirds of capacity; maintenance never takes everything down at once. |
+| **Permissions and secrets** | EKS Pod Identity gives each workload its own IAM role with only what it needs (for example, `api` can sign links under `docs/*` but cannot write to OpenSearch). Database passwords come from AWS Secrets Manager. Containers run as non-root. | No AWS keys in code or images; a compromised pod can do little. |
+
+### Shipping a change
+
+```
+git push → CI runs tests and builds the image (tag = commit SHA) → push to ECR
+        → update the manifest → Argo CD syncs the cluster → rolling update
+Rollback: revert the commit; Argo CD syncs the previous version.
+```
 
 ## Observability (logs, metrics, tracing, incident investigation)
 
-TODO
+The code uses **OpenTelemetry**, and the AWS Distro for OpenTelemetry (ADOT) collector sends metrics to CloudWatch and traces to X-Ray. Logs are JSON lines written to stdout; Fluent Bit ships them to CloudWatch Logs, so logs survive even if the collector is down. Because the code depends only on OpenTelemetry, changing the monitoring vendor means changing collector settings, not code.
+
+### Logs
+
+Every log line carries `traceId`, `docId` (when there is one), `userId` and an `event` name such as `index.started` or `index.failed`, so one search by `docId` shows everything that happened to a document. Logs never contain document text, pre-signed links or secrets.
+
+### Metrics and alerts
+
+Alerts follow the two targets from the brief: search under 500 ms, and searchable within 5 minutes of upload. Freshness is measured per document as `searchable_at − uploaded_at`. Thresholds below are starting values, tuned after load tests.
+
+| Area | Alert when | Why it matters |
+|---|---|---|
+| Search | p99 latency > 500 ms for 5 minutes; 5xx > 1% | The search target is missed |
+| Freshness | 95th percentile > 3 minutes, or any document > 5 minutes | The 5-minute target is at risk before users notice |
+| Queue | Oldest SQS message older than 3 minutes | Workers are falling behind |
+| DLQ | Any message | A document is failing repeatedly |
+| Stuck documents | Any document still `UPLOADING` 10 minutes past its deadline with a file in S3, or `PROCESSING` far longer than the visibility timeout (counted by the cleanup job) | These never get a `searchable_at`, so the freshness metric alone cannot see them |
+| OpenSearch | Cluster status red; rejected requests; JVM memory > 85%; free disk < 25% | The search layer is overloaded or running out of space |
+| Aurora | Read replica lag > 1 second | Re-checks read the primary only for 10 seconds after a change; lag near that window would let a re-check read stale grants |
+| Purge | A deleted document still present more than 2 days later | Deletion is not completing |
+
+Alerts that threaten a target (search latency, freshness, DLQ, OpenSearch red) page the on-call engineer; the rest open a ticket.
+
+### Traces
+
+HTTP calls, PostgreSQL queries, AWS SDK calls and OpenSearch requests are traced automatically. SQS does not carry trace context on its own. For messages we send (through the outbox), the trace context is stored in the `outbox` row and sent as the W3C `traceparent` message attribute, so the worker continues the same trace. Upload events are sent by S3, which cannot carry our trace, so the worker starts a new trace and logs it with the `docId`; searching logs by `docId` joins the upload request and the processing trace. Normal requests are sampled at about 5–10%; errors and slow requests are always kept.
+
+### Dashboards
+
+1. **Search:** traffic, latency, errors, `429`s, whether degraded mode is on.
+2. **Upload pipeline:** freshness, documents per state, stuck documents, processing time.
+3. **Queue:** queue depth, oldest message, DLQ.
+4. **OpenSearch:** cluster health, CPU, JVM memory, rejections, disk.
 
 ## Discussion scenarios
 
 ### 1. Uploaded successfully but not searchable after 30 minutes
 
-TODO
+The stuck-document alert should already have fired; if a user noticed first, that alert is fixed afterwards. First, **one document or many?** For one document, search the logs by `docId` and check its status:
+
+- `UPLOADING`: the S3 event never reached the queue; the cleanup job finds the file and queues it.
+- `PROCESSING`: a worker is stuck, or the message is in the DLQ.
+- `FAILED`: the reason is recorded.
+- `SEARCHABLE`: check the search side (passages present, user's permission, how the query was analyzed).
+
+For many documents, check queue age, worker limits and OpenSearch rejections. See [Observability](#observability-logs-metrics-tracing-incident-investigation) and [Upload pipeline](#upload-and-asynchronous-processing-pipeline).
 
 ### 2. A worker crashes while processing a document
 
-TODO
+The worker never deleted the message, so it reappears after the visibility timeout. The next worker sees the document still `PROCESSING` for the same S3 version, with a claim older than the timeout, and takes over. Passages have fixed IDs, so rewriting them creates no duplicates. A document that keeps failing ends in the DLQ and raises an alarm. See [Upload pipeline](#upload-and-asynchronous-processing-pipeline) step 4 and [Message queue](#message-queue-retries-idempotency-and-dead-letter-handling).
 
 ### 3. The same queue message is delivered more than once
 
-TODO
+Every step is idempotent: the worker re-reads the document's status first, passages have fixed IDs, database writes set values instead of incrementing, and a second event for an already-processed upload is ignored. Processing a message twice gives the same result as once. See [Message queue](#message-queue-retries-idempotency-and-dead-letter-handling).
 
 ### 4. A document is deleted while it is still being indexed
 
-TODO
+The user stops seeing it at once, because the permission re-check before results are returned keeps only `SEARCHABLE` documents. `delete-worker` removes the passages. If `index-worker` writes passages after that, it re-reads the status when it finishes and deletes what it wrote; and if it crashes first, the retried message finds the document `DELETED` and deletes its passages before acknowledging. The daily purge then removes every S3 version and the row. See [Deletion, step by step](#deletion-step-by-step).
 
 ### 5. Search traffic suddenly increases 10×
 
-TODO
+Protect first, then scale: OpenSearch takes tens of minutes to grow, so the system degrades in a fixed order (freshness, then cached hits, then lighter queries, then per-user and global limits), while the API, Aurora and OpenSearch scale out behind it. The permission re-check is never skipped. Find out whether the traffic is real users, a scraper or our own bug, because each needs a different fix. See [Scaling](#scaling-services-workers-and-search-infrastructure).
 
 ## Trade-offs and alternatives considered
 
-TODO
+| Decision | Chosen | Alternatives | Why |
+|---|---|---|---|
+| Platform | AWS managed services; our code on EKS | Vendor-neutral design; self-hosting everything on Kubernetes | Concrete services make failure handling concrete, and managed data stores give multi-AZ without running them ourselves. |
+| Processing queue | SQS Standard + DLQ | SQS FIFO; Kafka | Workers must be idempotent with any queue, so ordering and de-duplication add nothing, while retries and a DLQ come built in. |
+| Index unit | One record per ~2 KB passage | One record per document | Results must show matching passages with highlights in under 500 ms, which is cheap on short passages and slow on 2 MB books. |
+| Search engine | OpenSearch Service | PostgreSQL full-text search; Elasticsearch | 20 TB and 3,000 searches/s rule out PostgreSQL; OpenSearch and Elasticsearch are close, and OpenSearch is the AWS-managed option. |
+| Permission filtering | `acl` on every passage, plus a database re-check before returning | Filtering after the search; updating `acl` synchronously | Filtering inside the query keeps pages correct, and the re-check makes stale `acl` values harmless. |
+| Upload path | Pre-signed POST straight to S3 | Uploading through the API | 200 MB/s of file traffic never touches the API, and S3 enforces the size limit. |
+| Message delivery | Transactional outbox | Sending to SQS right after the commit | A crash between commit and send can no longer lose a delete or a sharing change. |
+| Deletion | Hidden at once, permanently removed within about a day, no restore | Soft delete with a 30-day restore window | The brief asks for deletion, not restore, and a restore path added race conditions for no stated need. |
+| Availability Zones | Three | Two | OpenSearch master elections need a majority, which two zones cannot keep after losing one. |
+| Capacity headroom | Shards sized for 2× today | Size for today; size for 10× | The shard count cannot be changed in place, and 10× would leave most of the cluster idle. |
+| Instrumentation | OpenTelemetry → CloudWatch and X-Ray | A vendor's own agent | The code stays the same if the monitoring vendor changes. |

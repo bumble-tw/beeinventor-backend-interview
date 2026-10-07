@@ -26,6 +26,13 @@ Requires Node.js 24 or later (runs `.ts` files directly via built-in type stripp
 - **Tests:** `npm test` runs the Node built-in test runner over the dictionary and the demo CLI, including running the CLI as a child process. Test cases are listed in [Tests](exercise-1-dictionary/README.md#tests).
 - **Try it with the CLI:** `npm run demo` starts an interactive session for testing by hand: type `setup cat car card`, then `contains cat`, `startsWith ca`, `search c?r*` or `help`. Commands can also be piped in, e.g. `printf 'setup cat car card\nstartsWith ca\ncontains ca\n' | npm run demo` prints `true` then `false`. See [Try it](exercise-1-dictionary/README.md#try-it) for all commands.
 
+## Exercise 2 at a glance
+
+- **Design:** our stateless code (API and workers) runs on EKS; files live in S3, metadata and permissions in Aurora PostgreSQL, and a passage-level index in OpenSearch. Uploads go straight to S3 with pre-signed links, and SQS drives background indexing. See [High-level architecture](exercise-2-system-design/README.md#high-level-architecture).
+- **Correctness:** PostgreSQL is the source of truth. An idempotency key on upload and idempotent workers mean retries never duplicate documents or passages, and every search page is re-checked against PostgreSQL before it is returned, so users never see a document they cannot read. See [Search indexing and consistency](exercise-2-system-design/README.md#search-indexing-and-db--search-engine-consistency) and [Authorization](exercise-2-system-design/README.md#authorization-and-permission-filtering).
+- **Scale:** about 20 TB of files and 10 billion passages; search fan-out across all shards is the bottleneck, so OpenSearch is sized for 2× peak and degrades in a fixed order under a spike. See [Capacity estimation](exercise-2-system-design/README.md#capacity-estimation) and [Scaling](exercise-2-system-design/README.md#scaling-services-workers-and-search-infrastructure).
+- **Assumptions and answers:** the assumptions, the five discussion scenarios and a trade-offs table are in the [Exercise 2 README](exercise-2-system-design/README.md); diagrams are in [`exercise-2-system-design/diagrams/`](exercise-2-system-design/diagrams/).
+
 ## AI-assisted workflow
 
 This project is developed with [Claude Code](https://claude.com/claude-code) using spec-driven development, so every change is planned, implemented, and verified against a written spec.
